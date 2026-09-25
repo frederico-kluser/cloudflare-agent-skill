@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# expose-port-cloudflare-agent-skill CLI entry — dispatches subcommands to the scripts.
+#
+#   expose-port-cloudflare-agent-skill <target>   expose a local server (default)
+#     <target> = 8080 | host:port | http(s)://host:port[/path]
+#   expose-port-cloudflare-agent-skill list       what is running now (read-only)
+#   expose-port-cloudflare-agent-skill stop       stop the tracked tunnel + proxy
+#   expose-port-cloudflare-agent-skill stop-all   stop every quick tunnel + gate proxy
+#   expose-port-cloudflare-agent-skill help       this help
+#
+# Installed as ~/.local/bin/expose-port-cloudflare-agent-skill by install.sh; re-run
+# install.sh to refresh it. Arguments after the subcommand pass through.
+set -euo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/." && pwd)"
+
+case "${1:-}" in
+  list) shift; exec "$DIR/list.sh" "$@" ;;
+  stop) shift; exec "$DIR/stop.sh" "$@" ;;
+  stop-all|stopall|stopAll) shift; exec "$DIR/stop-all.sh" "$@" ;;
+  --help|-h|help)
+    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0 ;;
+  '')
+    echo "usage: expose-port-cloudflare-agent-skill <http://host:port | host:port | port>" >&2
+    echo "       expose-port-cloudflare-agent-skill list | stop | stop-all" >&2
+    exit 2 ;;
+  *) exec "$DIR/expose-port.sh" "$@" ;;
+esac

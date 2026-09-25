@@ -1,0 +1,25 @@
+# Template mínimo de wrangler.toml (Workers) — copie e ajuste.
+# NUNCA coloque segredos aqui: use `echo "valor" | npx wrangler secret put NOME`.
+name = "meu-worker"
+main = "src/index.ts"
+
+# Cristaliza as APIs do Worker nesta data (evita breaking changes silenciosos).
+compatibility_date = "2026-09-24"
+# Mesmo sendo default em datas recentes, declarar explicitamente é IaC previsível.
+compatibility_flags = ["nodejs_compat"]
+
+# Smart Placement: reposiciona o isolate quando há subrequests latentes a backends distantes.
+[placement]
+mode = "smart"
+
+[vars]
+AMBIENTE = "producao"
+# Vars públicas APENAS (não-confidenciais).
+
+# Segredos (cofre encriptado, nunca aqui):
+#   echo "valor" | npx wrangler secret put STRIPE_SECRET_KEY
+
+# Rotas/domínio próprio (requer zone ativa + permissão Zone: Workers Routes: Edit no token):
+# [[routes]]
+# pattern = "api.example.com"
+# custom_domain = true
