@@ -227,6 +227,9 @@ install_shortcut
 
 say ""
 say "Done. From any folder:"
+say "    expose-port-cloudflare-agent-skill up <url> --domain <zona>  publish on YOUR domain (keeps ?token=…)"
+say "    expose-port-cloudflare-agent-skill down <host>               take it down (404 at once)"
+say "    expose-port-cloudflare-agent-skill ls                        what is published on your domain"
 say "    expose-port-cloudflare-agent-skill 8080                     expose a local server"
 say "    expose-port-cloudflare-agent-skill list                     what is running now"
 say "    expose-port-cloudflare-agent-skill stop                     stop the tracked tunnel + proxy"

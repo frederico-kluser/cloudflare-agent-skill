@@ -1,4 +1,147 @@
-# Expor porta local com senha (Cloudflare Tunnel)
+# Expor URL/porta local (Cloudflare Tunnel)
+
+Dois modos — escolha pelo pedido:
+
+| Pedido | Modo | Comando |
+|---|---|---|
+| "publica/abre/converte esta URL **no meu Cloudflare / no meu domínio** (example.com…)", URL estável, "nunca derrube" | **1 — domínio próprio** (named tunnel) | `python3 scripts/expose-port/domain.py up '<url>'` |
+| "manda-me um link rápido", sem conta/domínio, link temporário aleatório | **2 — quick tunnel** (`trycloudflare.com` + senha `?key=` + QR) | `bash scripts/expose-port/expose-port.sh <url>` |
+
+## Modo 1 — domínio próprio (`domain.py`)
+
+Um comando publica, outro derruba. Path, query e fragmento da URL local são **preservados**:
+`http://127.0.0.1:3080/?token=XYZ` → `https://example.com/?token=XYZ` (ou `https://3080.example.com/?token=XYZ`).
+
+```bash
+python3 scripts/expose-port/domain.py up 'http://127.0.0.1:3080/?token=XYZ'            # domínio por omissão
+python3 scripts/expose-port/domain.py up 'localhost:5173/app' --domain example.com --name app
+python3 scripts/expose-port/domain.py up '<url>' --name @ --alias www --persist         # apex + www, sobrevive a reboot
+python3 scripts/expose-port/domain.py up '<url>' --gate                                 # app SEM auth: senha ?key=
+python3 scripts/expose-port/domain.py down app.example.com     # ou: down 5173 | down @ | down www | down all
+python3 scripts/expose-port/domain.py list                   # rotas + cloudflared não geridos
+python3 scripts/expose-port/domain.py purge example.com        # remove TUDO desta skill na zona
+python3 scripts/expose-port/domain.py selftest               # offline
+# atalho global equivalente: expose-port-cloudflare-agent-skill up|down|ls|purge …
+```
+
+Saída (contrato): `OK: publicado|atualizado|já estava no ar em N s`, bloco com host/upstream/
+túnel/modo/verificação e, na última linha, **`URL=<url pública completa>`** — é essa que se
+entrega. `--json` devolve o mesmo em JSON (`url`, `probe`, `down`…). Erros: `Erro: … —
+Solução: …` (exit 1 operacional · 2 uso · 3 dependência/credencial).
+
+**Host público**: `--name` (label; `@` = apex; FQDN da zona) > rota que já publica o mesmo
+upstream (`localhost`/`127.0.0.1`/`::1` contam como o mesmo) > `<porta>.<domínio>`. Só um nível
+abaixo da zona (o Universal SSL grátis cobre `*.zona`, não `a.b.zona`). **Domínio**: `--domain` >
+`CLOUDFLARE_EXPOSE_DOMAIN` em `~/.config/cloudflare-agent-skill/config.env` > zona do
+`cert.pem` > única zona ativa da conta (a escolha fica gravada em `config.env`).
+
+### Arquitetura
+
+```
+Browser ── https://<host>.<zona>/?token=… ──► edge Cloudflare (TLS, HTTP/2, WS, SSE)
+   *.zona (curinga, 1× por zona) e CNAMEs próprios (apex/www) → <túnel cfx-<zona>-<id>>.cfargotunnel.com
+                                   ▼
+     cloudflared (named tunnel cfx-<zona>-<id>, ingress catch-all → router; nunca reinicia por rota)
+                                   ▼  http://127.0.0.1:<porta aleatória>
+     zone-runner.mjs — router por Host (routes.json, reload por SIGHUP em ~50 ms):
+       · Host → upstream loopback; Origin/Referer também quando são a origem pública da rota
+         (Origin de terceiros passa intacto → CSRF da app continua a funcionar)
+       · Location absoluto para o upstream → volta como https://<host>
+       · path/query/corpo/WebSocket/SSE verbatim · gate ?key= opcional · host sem rota → 404
+                                   ▼
+     a app local (intocada)
+```
+
+Estado em `~/.local/state/cloudflare-agent-skill/zones/<zona>/` (`zone.json`, `routes.json`,
+`runtime.json`, `runner.log`, `creds.json` 0400). Processo: unit `systemd --user`
+`cfx-zone@<zona>.service` (Restart=always); fica *enabled* (arranca no boot) só se houver rota
+`--persist`. Rotas efémeras levam o `boot_id` e expiram no reboot. Sem rotas → processo parado.
+Sem systemd → processo em background (`setsid`) e `--persist` recusado.
+
+**Porquê um túnel por zona + curinga**: um hostname novo na Cloudflare leva **8–33 s** a ser
+roteado pela edge (medido: autoritativo 7–19 s, edge 8–33 s), e recriar o mesmo host noutro
+túnel deixa a edge a mandar para o túnel antigo (530) ~15–25 s. Com `*.zona` → túnel fixo,
+um host novo é só uma rota local: **~0,06 s** na edge, `up` total ~0,7 s, `down` ~0,3 s.
+
+### Tempos medidos (2026-09-26, zona Free)
+
+| Operação | Tempo |
+|---|---|
+| 1º `up` numa zona (cria túnel + curinga) | ~9–10 s |
+| `up` de host novo coberto pelo curinga | ~0,7 s (verificado pela edge) |
+| `up` de rota existente (ex.: token novo) | ~0,2 s |
+| `down` (rota → 404) / última rota (pára o processo) | ~0,2 s / ~0,3 s |
+| `up` a frio (processo parado) | ~1,7 s |
+| apex/`www`/nome com CNAME próprio novo | +8–33 s de propagação (a verificação espera) |
+| trocar o CNAME de outro túnel para o nosso (`--force`) | a edge converge em 1–3 min; manter a origem antiga no ar até lá |
+
+### Preparação automática (máquina nova)
+
+Nada a instalar à mão: o `up` prepara o que faltar e `domain.py setup` faz o mesmo de forma
+explícita, provando as permissões com testes reais e reversíveis (`setup --check` = só relatório,
+`setup --deps` = só ferramentas). Sem sudo e sem perguntas:
+
+| Falta | O que o script faz |
+|---|---|
+| `cloudflared` | binário oficial do release do GitHub, SHA256 do corpo do release, em `~/.local/bin` (macOS: `brew` se existir) |
+| Node ≥ 18.13 | Node LTS de nodejs.org (`SHASUMS256.txt`) em `~/.local/share/cloudflare-agent-skill/` (privado) |
+| credencial | `cloudflared tunnel login` em background + browser aberto; espera o `cert.pem` (exit **4** se o tempo acabar — o login continua vivo; autorizar e repetir) |
+| domínio padrão | grava a zona autorizada (ou a única da conta) em `config.env` |
+| linger (`--persist`) | `loginctl enable-linger` (ou `sudo -n`), só avisa se não der |
+
+Único passo humano: no browser, escolher o domínio e clicar **Authorize** (a URL impressa abre
+em qualquer aparelho — serve para servidores sem ecrã). O `cert.pem` chega para túnel + DNS
+dessa zona; um token `CLOUDFLARE_API_TOKEN` com Zone·DNS·Edit + Account·Cloudflare Tunnel·Edit
+também serve e cobre várias zonas. Requisitos que não se instalam sozinhos: `python3` ≥ 3.9 e
+um domínio já ativo na Cloudflare (sem domínio → modo 2).
+
+### Verificação feita pelo próprio `up`
+
+Sem DNS recursivo (não semeia cache negativa em 1.1.1.1/ISP): pergunta o A record direto ao
+nameserver autoritativo da zona, liga-se ao IP da edge com `curl --resolve`, confirma que a
+edge chega a ESTE router (`/__cfx-health` → `x-cfx-proxy: ok`) e depois faz o GET real ao path.
+`verificação HTTPS 401/200/303…` = a app respondeu; `app-down` = túnel OK mas nada escuta no
+upstream (a URL funciona assim que a app subir); `edge-pendente`/`dns-pendente` = propagação
+(repetir o `up`, é idempotente).
+
+### Gotchas
+
+- **Fence de Host/Origin** (Vite `allowedHosts`, apps que só confiam em loopback em `/api`):
+  resolvido pela reescrita. Apps que precisam do host público (geram URLs absolutas a partir
+  do `Host`): `--keep-host`.
+- **Cookies**: a app vê `Host: 127.0.0.1:<porta>` — cookies "presos" à autoridade (apps que
+  assinam a sessão com `127.0.0.1:<porta>`) continuam válidos pela URL pública.
+- **App sem autenticação** num host previsível (`3000.zona`) = qualquer um usa. `--gate` põe a
+  senha `?key=` (cookie HttpOnly/SameSite=Strict/Secure, WS incluído) à frente.
+- **Registo DNS de terceiros** no nome pedido → erro com a solução (`--name` outro ou `--force`,
+  que substitui o registo; um CNAME é PATCHado = troca atómica sem janela NXDOMAIN).
+- `*.zona` já existente e não criado pela skill → a skill não mexe; cada host recebe CNAME
+  próprio (volta a haver os 8–33 s por host novo). `CLOUDFLARE_EXPOSE_WILDCARD=0` força isso.
+- `down` de host coberto pelo curinga deixa o nome a resolver (curinga) com **404** do router;
+  de host com CNAME próprio apaga o CNAME. `purge` apaga curinga, CNAMEs e o túnel.
+- Nunca montar à mão units/`config.yml`/proxies para isto — deixa a app exposta em sítios que
+  a skill não conhece nem derruba (ver LEARNINGS 2026-09-26).
+- Várias máquinas na mesma zona: cada uma tem o seu túnel (`cfx-<zona>-<id>`) e marca os seus
+  registos (`cfx:<id>:`); só a primeira fica com o curinga — nas outras cada host novo leva
+  CNAME próprio (8–33 s na 1ª vez). `<id>` = 6 hex do hash do machine-id (anónimo).
+
+### Troubleshooting (modo 1)
+
+| Sintoma | Causa / correção |
+|---|---|
+| `Erro: … já tem registo DNS que não é desta skill` | nome ocupado — outro `--name` ou `--force` |
+| `o túnel da zona … não ficou pronto` | egress 7844 (UDP/TCP) bloqueado, túnel apagado fora daqui ou credencial inválida → `domain.py purge <zona>` e `up` de novo |
+| `sem permissão para POST …/cfd_tunnel` (exit 3) | token sem Tunnel:Edit e sem `cert.pem` → `domain.py setup` (faz o login) |
+| exit 4 `à espera da autorização no browser` | abrir a URL impressa, escolher o domínio, *Authorize*; repetir o comando |
+| `a zona 'x' não é visível para token nem cert.pem` | o login autorizou outra zona → `domain.py setup --domain x` e escolher `x` no browser |
+| `SHA256 não confere` no setup | download corrompido/adulterado — repetir; se persistir instalar à mão |
+| `verificação … app-down` | a app local está parada; a URL funciona quando subir |
+| 530 logo após `up` com `--force`/CNAME novo | propagação da edge (até ~3 min em troca de túnel) — o antigo continua a servir |
+| 404 "Nada publicado em <host>" | host sem rota (curinga) — `domain.py list` |
+| 403 nas rotas `/api` da app | a app precisa de `--keep-host`? (ou o contrário: foi publicada com `--keep-host`) |
+| `list` mostra `expirada (reboot)` | rota efémera de um boot anterior — `up` de novo (ou `--persist`) |
+
+## Modo 2 — quick tunnel com senha (sem conta, sem domínio)
 
 Torna qualquer serviço local (`http://127.0.0.1:<port>` ou `http://localhost:<port>`) numa URL pública `https://*.trycloudflare.com` **protegida por senha**: a skill gera uma senha aleatória de 256 bits, acrescenta-a à URL (`?key=…`) e imprime o **link completo como QR code no terminal** — a pessoa digital e abre. Sem conta Cloudflare, sem domínio, sem DNS, sem alterar regras de firewall e **sem tocar no projeto servido** (todo o código de suporte vive ao lado, em `scripts/expose-port/`).
 
@@ -6,7 +149,7 @@ Torna qualquer serviço local (`http://127.0.0.1:<port>` ou `http://localhost:<p
 - A senha **vale até ser revogada** — reutilizável por omissão (um link preview, um segundo device ou uma reabertura nunca a queimam; `TOKEN_REUSE=0` restaura single-use). Ao abrir o link, o browser é redirecionado para a **URL limpa** (senha removida, `Referrer-Policy: no-referrer`) e recebe uma session cookie segura (HttpOnly, SameSite=Strict, Secure).
 - **Nada expira sozinho**: sem TTL por omissão; as sessões duram até o proxy reiniciar (`TOKEN_TTL_MS`/`SESSION_TTL_MS` limitam opcionalmente). O link só deixa de funcionar quando é revogado (`new-link.sh`), o túnel é parado (`stop`/`stop-all`) ou os processos morrem. Uma senha nova pode ser gerada a qualquer momento com `new-link.sh` — a URL pública mantém-se.
 
-## Quando usar
+### Quando usar (modo 2)
 
 - Alguém precisa de um link público para um servidor local (dev UI, API, dashboard, preview build) e o acesso tem de ficar limitado a quem tem a senha.
 - O serviço ouve apenas em `127.0.0.1`/`localhost` (os túneis funcionam na mesma — o cloudflared liga-se localmente).
@@ -14,11 +157,11 @@ Torna qualquer serviço local (`http://127.0.0.1:<port>` ou `http://localhost:<p
 
 **Quando NÃO usar:**
 
-- Exposição em produção → usar um **named tunnel** (conta Cloudflare + domínio) com **Cloudflare Access** (auth por identidade) em vez de uma senha partilhada.
+- Há conta + domínio, ou o pedido diz "no meu Cloudflare/domínio" → **modo 1** (`domain.py`). Em produção, pôr **Cloudflare Access** (auth por identidade) à frente.
 - Não há `node` disponível — o gate proxy (zero deps, `node:http/https`) precisa dele.
 - O destinatário tem de ser uma **pessoa identificável que se possa revogar**: qualquer um com o link acede até gerar link novo (`new-link.sh`) ou parar o túnel.
 
-## Procedimento
+### Procedimento (modo 2)
 
 **1. Pré-requisitos** (uma vez por máquina):
 
@@ -67,7 +210,7 @@ Propriedades de segurança-chave: comparação constant-time (`crypto.timingSafe
 
 **6. Revogar / parar** — `new-link.sh` (mesma URL pública, sessões antigas revogadas), `stop.sh` (túnel + proxy) ou `stop-all.sh` (todos os quick tunnels e gate proxies da máquina; named tunnels de conta nunca são tocados).
 
-## Comandos
+### Comandos (modo 2)
 
 Todos a partir da raiz da skill; os argumentos do alvo são os mesmos do ponto 2.
 
@@ -109,24 +252,9 @@ curl -s --http1.1 -b jar -o /dev/null -w "%{http_code}\n" --max-time 8 \
 # sem o cookie: rejeitado (socket destroyed / 502 da edge)
 ```
 
-Named tunnel para produção (conta + domínio obrigatórios):
+Named tunnel no domínio próprio: **não montar à mão** — é o modo 1 (`domain.py up`), que cria túnel, DNS, router e verificação num comando. Para identidade (SSO) por cima, pôr **Cloudflare Access** à frente do host publicado. Docs: <https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/>
 
-```sh
-cloudflared tunnel login
-cloudflared tunnel create <name>                    # UUID + credentials file em ~/.cloudflared/
-cloudflared tunnel route dns <name> app.yourdomain.com
-# ~/.cloudflared/config.yml:
-#   tunnel: <UUID>
-#   credentials-file: /home/<user>/.cloudflared/<UUID>.json
-#   ingress:
-#     - hostname: app.yourdomain.com
-#       service: http://127.0.0.1:3100      # o gate proxy — um custom domain também não é loopback
-cloudflared tunnel --config ~/.cloudflared/config.yml run <name>
-```
-
-Com named tunnel, colocar **Cloudflare Access** à frente para auth por identidade — a forma correta de expor um agent/admin UI em produção. Docs: <https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/>
-
-## Gotchas
+### Gotchas (modo 2)
 
 **Segurança (ler antes de partilhar o URL):**
 
@@ -154,6 +282,6 @@ Com named tunnel, colocar **Cloudflare Access** à frente para auth por identida
 | O túnel nunca fica pronto | Vê o log do túnel — normalmente é um bloqueio de egress (é preciso outbound-only). |
 | "websocket: bad handshake" nos logs do cloudflared | A origem recusou o upgrade — rejeição do gate (sem cookie) ou fence 403. Ver linhas acima. |
 
-## Nota
+### Nota (modo 2)
 
 `scripts/expose-port/README.md` é o documento original do projeto (proveniência); para operar, siga este módulo (caminhos já adaptados à skill unificada). Os ficheiros de estado (link atual e logs) vivem em `scripts/expose-port/`.

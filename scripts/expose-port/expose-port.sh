@@ -27,6 +27,11 @@ cd "$DIR"
 source "$DIR/lib.sh"
 
 # --- prerequisites -----------------------------------------------------------
+# Falta cloudflared/node? Instala sozinho (binários oficiais, SHA256, sem sudo) antes de seguir.
+if ! command -v cloudflared >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then
+  python3 "$DIR/domain.py" setup --deps >&2 || true
+  hash -r
+fi
 command -v cloudflared >/dev/null 2>&1 || {
   echo "ERROR: cloudflared not found. Install it:" >&2
   echo "  curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared && chmod +x cloudflared && sudo mv cloudflared /usr/local/bin/" >&2

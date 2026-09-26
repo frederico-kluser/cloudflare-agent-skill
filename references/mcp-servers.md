@@ -64,8 +64,8 @@ Depois: `opencode mcp auth cloudflare`.
 `durable-objects`, `agents-sdk`, `cloudflare-one`, `cloudflare-one-migrations`,
 `cloudflare-email-service`, `nextjs-on-cloudflare`, `sandbox-stable`,
 `sandbox-next`, `sandbox-migrate-to-next`, `turnstile-spin`, `web-perf`.
-Estas são as skills de PRODUTO (como construir); a `cloudflare-agent-skill`
-(cobre a ORQUESTRAÇÃO por terminal). Complementam-se.
+O conteúdo delas já vem nesta skill (`references/` + snapshot em `references/upstream/`);
+instalá-las ao lado só cria duplicados a competir no catálogo do agente.
 
 ## API MCP (Code Mode) avançada
 

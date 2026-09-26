@@ -3,6 +3,8 @@
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/." && pwd)"
 CURRENT_LINK_FILE="$SKILL_DIR/current-link"
+# Ferramentas que o domain.py setup instala sem sudo (cloudflared em ~/.local/bin, Node privado).
+export PATH="$PATH:$HOME/.local/bin:${XDG_DATA_HOME:-$HOME/.local/share}/cloudflare-agent-skill/bin"
 
 # Parse the target argument into HOST, PORT, PROTO.
 # Accepts: 8080 | localhost:8080 | 127.0.0.1:8080 | http://localhost:8080 |

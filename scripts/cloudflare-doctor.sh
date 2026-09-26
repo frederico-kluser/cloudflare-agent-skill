@@ -26,7 +26,7 @@ printf '%-22s %-10s %s\n' "----------------------" "----------" "---------------
 if command -v node >/dev/null 2>&1; then
   printf '%-22s %-10s %s\n' "node" "ok" "$(node -v)"
 else
-  printf '%-22s %-10s %s\n' "node" "FALTA" "Erro: node não instalado — Solução: instalar Node.js ≥ 18 pelo gestor de pacotes"
+  printf '%-22s %-10s %s\n' "node" "FALTA" "Erro: node não instalado — Solução: python3 scripts/expose-port/domain.py setup --deps (sem sudo)"
   MISSING=1
 fi
 
@@ -41,14 +41,14 @@ fi
 if command -v cloudflared >/dev/null 2>&1; then
   printf '%-22s %-10s %s\n' "cloudflared" "ok" "$(cloudflared --version 2>/dev/null | head -1)"
 else
-  printf '%-22s %-10s %s\n' "cloudflared" "FALTA" "instalar: sudo pacman -S cloudflared (ou ver references/auth-and-tokens.md)"
+  printf '%-22s %-10s %s\n' "cloudflared" "FALTA" "instalar: python3 scripts/expose-port/domain.py setup --deps (binário oficial, sem sudo)"
 fi
 
 # 4. curl (API v4)
 if command -v curl >/dev/null 2>&1; then
   printf '%-22s %-10s %s\n' "curl" "ok" "$(curl --version 2>/dev/null | head -1 | cut -c1-40)"
 else
-  printf '%-22s %-10s %s\n' "curl" "FALTA" "Erro: curl necessário para cf-api.sh — Solução: sudo pacman -S curl"
+  printf '%-22s %-10s %s\n' "curl" "FALTA" "Erro: curl necessário para cf-api.sh — Solução: instalar curl pelo gestor de pacotes (apt/dnf/pacman/brew)"
   MISSING=1
 fi
 
@@ -74,6 +74,18 @@ if [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && command -v curl >/dev/null 2>&1; then
     000)   printf '%-22s %-10s %s\n' "token verify" "sem rede" "não foi possível contactar api.cloudflare.com" ;;
     *)     printf '%-22s %-10s %s\n' "token verify" "HTTP $RESP" "ver references/troubleshooting.md" ;;
   esac
+fi
+
+# 7. Publicar URL local no domínio (scripts/expose-port/domain.py) — read-only
+if [ -n "${CLOUDFLARE_EXPOSE_DOMAIN:-}" ]; then
+  printf '%-22s %-10s %s\n' "expose dominio" "ok" "$CLOUDFLARE_EXPOSE_DOMAIN (domain.py up '<url>' usa este por omissão)"
+else
+  printf '%-22s %-10s %s\n' "expose dominio" "ausente" "definir CLOUDFLARE_EXPOSE_DOMAIN=<zona> em ~/.config/cloudflare-agent-skill/config.env"
+fi
+if [ -f "${TUNNEL_ORIGIN_CERT:-$HOME/.cloudflared/cert.pem}" ]; then
+  printf '%-22s %-10s %s\n' "cert.pem (tuneis)" "ok" "túneis + DNS da zona autorizada (domain.py)"
+else
+  printf '%-22s %-10s %s\n' "cert.pem (tuneis)" "ausente" "python3 scripts/expose-port/domain.py setup (faz o login no browser)"
 fi
 
 echo

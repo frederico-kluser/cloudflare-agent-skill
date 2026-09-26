@@ -34,7 +34,7 @@ esac
 [ -n "$PATH_" ] || { echo "Erro: caminho da API em falta — Solução: ex. GET /zones?name=example.com"; exit 2; }
 case "$PATH_" in /*) ;; *) PATH_="/$PATH_" ;; esac
 
-command -v curl >/dev/null 2>&1 || { echo "Erro: curl não instalado — Solução: sudo pacman -S curl"; exit 3; }
+command -v curl >/dev/null 2>&1 || { echo "Erro: curl não instalado — Solução: instalar curl pelo gestor de pacotes (apt/dnf/pacman/brew)"; exit 3; }
 [ -n "${CLOUDFLARE_API_TOKEN:-}" ] || {
   echo "Erro: CLOUDFLARE_API_TOKEN não definido — Solução: export CLOUDFLARE_API_TOKEN=cfut_… (criar em dash.cloudflare.com/profile/api-tokens; ver references/auth-and-tokens.md)"; exit 3; }
 
@@ -89,5 +89,5 @@ PY
   fi
   exit "$EXIT"
 else
-  echo "Erro: python3 não instalado (necessário para validar JSON) — Solução: sudo pacman -S python"; exit 3
+  echo "Erro: python3 não instalado (necessário para validar JSON) — Solução: instalar python3 pelo gestor de pacotes"; exit 3
 fi

@@ -38,8 +38,18 @@ export CLOUDFLARE_API_TOKEN="cfut_…"      # NUNCA commitar; ideal: gerenciador
 export CLOUDFLARE_ACCOUNT_ID="…"          # opcional p/ wrangler (GET /accounts)
 ```
 
-Nunca ler ficheiros de segredos alheios (`~/.secrets`, `.git-credentials`) — apenas
-documentar nomes/caminhos.
+Ou gravar em `~/.config/cloudflare-agent-skill/credentials.env` (chmod 600, fora do repo) —
+os scripts carregam-no quando a variável não está no ambiente. Nunca ler ficheiros de
+segredos alheios (`~/.secrets`, `.git-credentials`) — apenas documentar nomes/caminhos.
+
+## Túneis e publicar URLs: o `cert.pem` basta
+
+`cloudflared tunnel login` (1 clique no browser: escolher o domínio → *Authorize*) grava
+`~/.cloudflared/cert.pem`. O token lá dentro (bloco `ARGO TUNNEL TOKEN`) lê/escreve o DNS da
+zona autorizada e cria/apaga túneis da conta — é tudo o que `scripts/expose-port/domain.py`
+precisa. `domain.py setup` faz esse login sozinho (abre o browser e espera) quando não há
+credencial; um token de API com Zone·DNS·Edit + Account·Cloudflare Tunnel·Edit também serve
+(e cobre várias zonas).
 
 ## Verificar e rotacionar
 

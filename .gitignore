@@ -1,0 +1,5 @@
+__pycache__/
+# estado local do quick tunnel (scripts/expose-port) — nunca versionar
+scripts/expose-port/current-link
+scripts/expose-port/*.pid
+scripts/expose-port/*.log

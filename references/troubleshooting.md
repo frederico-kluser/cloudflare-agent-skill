@@ -46,10 +46,27 @@ Tabela `Erro → Causa → Correção`. Acrescente aqui erros novos que encontra
 | Resposta truncada | portão de 48 KB | paginar (`?page=N&per_page=50`) ou filtrar |
 | 429 rate limit | rajadas de chamadas | backoff; agrupar operações via `wrangler` |
 
+## Túneis / publicar URL local (`scripts/expose-port/domain.py`)
+
+| Erro | Causa | Correção |
+|---|---|---|
+| URL entregue sem `?token=` / URL local devolvida | publicado à mão, perdendo path/query | usar `domain.py up '<url completa>'` e entregar a linha `URL=` |
+| `… já tem registo DNS que não é desta skill` | o nome pedido tem A/AAAA/CNAME de terceiros | outro `--name`, ou `--force` (substitui; CNAME é PATCHado sem janela NXDOMAIN) |
+| `sem permissão para POST …/cfd_tunnel` / API 10000 ao criar túnel | sem `~/.cloudflared/cert.pem` e token sem `Cloudflare Tunnel:Edit` | `domain.py setup` (faz o `cloudflared tunnel login` sozinho) ou acrescentar a permissão ao token |
+| `domain.py` sai com exit 4 | à espera do *Authorize* no browser | abrir a URL impressa (qualquer aparelho), escolher o domínio, *Authorize*; repetir |
+| `cloudflared`/`node` em falta | máquina nova | `domain.py setup --deps` instala (binários oficiais, SHA256, sem sudo) — o `up` já o faz sozinho |
+| `o túnel da zona … não ficou pronto` | egress 7844 bloqueado / túnel apagado fora da skill | `domain.py purge <zona>` e `up` de novo |
+| 530 (Error 1033) logo após criar/trocar um CNAME | propagação da edge: host novo 8–33 s; troca de túnel 1–3 min | esperar (a verificação do `up` já espera); hosts cobertos pelo curinga não sofrem isto |
+| Host novo ainda NXDOMAIN no browser do utilizador | cache negativa (SOA min 1800 s) de um resolver que perguntou antes de o registo existir | usar hosts cobertos por `*.zona` (sempre resolvem); `resolvectl flush-caches` localmente |
+| 502 da edge com a app parada | a edge troca o 502 do router pela página dela | `domain.py up` diz `app-down`; subir a app |
+| 403 nas rotas `/api` da app | fence de Host/Origin (só loopback) | publicar SEM `--keep-host` (reescrita ligada, é o padrão) |
+| quick tunnel: `gate proxy did not become healthy on 127.0.0.1:3100` | outra coisa na porta 3100 (ex.: um proxy antigo deixado como serviço) | `ss -ltnp \| grep 3100`; parar o dono; ou usar o modo domínio |
+| `expose-port-cloudflare-agent-skill: … cli.sh: Arquivo ou diretório inexistente` | atalho gerado antes da fusão aponta para o repo antigo | `bash scripts/expose-port/install.sh` (reescreve o atalho) |
+
 ## Registo global da skill (symlinks)
 
 | Erro | Causa | Correção |
 |---|---|---|
 | Skill não aparece no agente | symlink em falta no root desse agente | `bash scripts/link-skill-global.sh` (idempotente) |
-| `link divergente` movido para backup | existia outra coisa com o mesmo nome | inspecionar `~/Agent-Skills/.link-backups/<ts>/` |
+| `link divergente` movido para backup | existia outra coisa com o mesmo nome | inspecionar `~/.local/state/cloudflare-agent-skill/link-backups/<ts>/` |
 | Frontmatter inválido | name/description em falta | corrigir SKILL.md (name ≤64, `^[a-z0-9-]+$`) |
