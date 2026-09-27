@@ -176,7 +176,7 @@ falta. Saída JSON com `--json` onde faz sentido; tudo truncado a 48 KB.
 
 Ao descobrir um erro novo do wrangler/API ou um comando que faltou, acrescente a
 entrada em `references/troubleshooting.md` ou `references/wrangler-cheatsheet.md`
-e registe em `LEARNINGS.md` (fonte: usuário > docs oficial > inferência).
+e registe na memória CoALA local (`coala.py add`; fonte: usuário > docs oficial > inferência).
 `references/upstream/` é um snapshot das skills oficiais da Cloudflare (repo
 `cloudflare/skills`) no momento da fusão — ao atualizar, não invente: consulte os
 docs oficiais e registe a fonte.

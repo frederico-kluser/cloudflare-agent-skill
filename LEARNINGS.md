@@ -1,3 +1,5 @@
+> **MEMÓRIA APOSENTADA (2026-09-27):** o conteúdo deste ficheiro foi migrado para a memória CoALA local do repositório (`.agents/cloudflare-agent-skill-coala-memory-agent-skill/`). Fica só como **fonte histórica** — não escrever mais aqui. Aprendizado novo: `python3 .agents/cloudflare-agent-skill-coala-memory-agent-skill/scripts/coala.py add --type episodic --content "…"`.
+
 # LEARNINGS — cloudflare-agent-skill
 
 Registo de aprendizados (fonte: utilizador > docs oficial > medição/inferência). Data primeiro.

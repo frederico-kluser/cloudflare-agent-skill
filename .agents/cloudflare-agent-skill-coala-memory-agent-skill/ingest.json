@@ -1,0 +1,42 @@
+{
+  "_doc": "Memória interna do repo cloudflare-agent-skill para `coala.py ingest`. LEARNINGS.md (episódica) + skill/readme + references/*.md destilados (semântica). EXCLUI references/upstream/** — material de terceiros já destilado nos módulos de topo.",
+  "version": 1,
+  "key_prefix": "cf",
+  "path_prefix": "",
+  "exclude": [],
+  "rules": [
+    {
+      "name": "learnings",
+      "include": ["LEARNINGS.md"],
+      "mode": "markdown",
+      "type": "episodic",
+      "origin": "agent",
+      "tags": "learnings,evolucao,historico"
+    },
+    {
+      "name": "skill",
+      "include": ["SKILL.md"],
+      "mode": "markdown",
+      "type": "semantic",
+      "origin": "agent",
+      "tags": "skill,contrato"
+    },
+    {
+      "name": "referencias",
+      "include": ["references/*.md"],
+      "mode": "markdown",
+      "type": "semantic",
+      "origin": "agent",
+      "tags": "referencia,{stem}"
+    },
+    {
+      "name": "readme",
+      "include": ["README.md"],
+      "mode": "markdown",
+      "type": "semantic",
+      "origin": "agent",
+      "tags": "docs,readme"
+    }
+  ],
+  "graph": { "entities": [], "edges": [] }
+}
