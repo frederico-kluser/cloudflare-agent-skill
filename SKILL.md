@@ -39,6 +39,9 @@ python3 scripts/expose-port/domain.py list                   # o que está publi
   token novo = mesma URL com o token novo, em ~0,2 s) > `<porta>.<domínio>`.
 - "Nunca derrube"/"permanente" → `--persist`. "Derruba"/"tira do ar" → `down <host>` (ou
   `down all`). "Remove tudo da conta" → `purge <zona>`. App sem login próprio → `--gate`.
+- **Gate TOTP** (código 2FA/Google Authenticator à frente da zona) → `auth.json`/`inject.json`
+  no zone-dir, `%10^digits`, replay/rate-limit e hot-reload: §"Gate TOTP (overlay opcional do
+  zone-runner)" em `references/expose-port.md`.
 - Tempos medidos: host novo ~0,7 s (curinga `*.zona`), `down` ~0,3 s, 1ª vez numa zona ~10 s
   (cria túnel + curinga). O `up` só imprime `OK` depois de provar a URL pela edge; `app-down`
   = a app local é que está parada.

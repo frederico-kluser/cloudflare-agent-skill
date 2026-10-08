@@ -47,13 +47,16 @@ Browser ── https://<host>.<zona>/?token=… ──► edge Cloudflare (TLS, 
        · Host → upstream loopback; Origin/Referer também quando são a origem pública da rota
          (Origin de terceiros passa intacto → CSRF da app continua a funcionar)
        · Location absoluto para o upstream → volta como https://<host>
+       · ordem: /__cfx-health → gate TOTP (auth.json, opcional, §Gate TOTP) → gate ?key= →
+         injecção ?token= (inject.json, só GET /) → proxy; WebSocket: TOTP + ?key=, nunca injeta
        · path/query/corpo/WebSocket/SSE verbatim · gate ?key= opcional · host sem rota → 404
                                    ▼
      a app local (intocada)
 ```
 
 Estado em `~/.local/state/cloudflare-agent-skill/zones/<zona>/` (`zone.json`, `routes.json`,
-`runtime.json`, `runner.log`, `creds.json` 0400). Processo: unit `systemd --user`
+`runtime.json`, `runner.log`, `creds.json` 0400 — e, se o overlay TOTP estiver ligado,
+`auth.json`/`inject.json`/`auth-state.json`, §Gate TOTP). Processo: unit `systemd --user`
 `cfx-zone@<zona>.service` (Restart=always); fica *enabled* (arranca no boot) só se houver rota
 `--persist`. Rotas efémeras levam o `boot_id` e expiram no reboot. Sem rotas → processo parado.
 Sem systemd → processo em background (`setsid`) e `--persist` recusado.
@@ -62,6 +65,56 @@ Sem systemd → processo em background (`setsid`) e `--persist` recusado.
 roteado pela edge (medido: autoritativo 7–19 s, edge 8–33 s), e recriar o mesmo host noutro
 túnel deixa a edge a mandar para o túnel antigo (530) ~15–25 s. Com `*.zona` → túnel fixo,
 um host novo é só uma rota local: **~0,06 s** na edge, `up` total ~0,7 s, `down` ~0,3 s.
+
+### Gate TOTP (overlay opcional do zone-runner)
+
+Autenticação TOTP (Google Authenticator) **à frente de todas as rotas da zona**, menos os hosts
+em `exempt`. É um overlay do runner: `up`/`down` continuam a ser os únicos donos do
+`routes.json`, e a configuração extra vive **fora** dele, em três ficheiros do zone-dir.
+
+| Ficheiro (zone-dir) | Quem escreve | Quem lê | Conteúdo |
+|---|---|---|---|
+| `auth.json` | **utilizador**/`kluserme` | runner (watch 500 ms) | `enabled`, `totp.secret_hex` (40 hex), `totp.digits`/`period`/`skew`, `exempt: [hosts]` |
+| `inject.json` | **utilizador**/`kluserme` | runner (watch 500 ms) | `routes.<host>.token` — token de boot injetado no `GET /` |
+| `auth-state.json` | **runner** (único dono) | runner | `last_counter` (replay), `fails`/`fails_window_start` (rate-limit) |
+
+O `domain.py` **nunca** lê nem escreve `auth.json`/`inject.json` (do zone-dir só usa
+`/__cfx-health`): um `up` **substitui a entrada da rota por inteiro**, por isso tudo o que seja
+configuração adicional tem de ficar fora do `routes.json` — dentro dele, o `up` seguinte
+apagava-a. `auth-state.json` é escrito de forma **atómica** (`auth-state.json.tmp` + `rename`,
+modo `0600`). `enabled: true` sem `secret_hex` de 40 hex (minúsculas) ⇒ TOTP desligado (fica
+registado no `runner.log`); `digits` 6–8, `period` 1–3600 s, `skew` 0–3.
+
+**Pipeline por request** (ordem exata): `/__cfx-health` (match exato do `req.url`, 200 — isento;
+é o probe com que o `domain.py` prova a edge) → **gate TOTP** (host em `exempt` salta-o; sem
+cookie de sessão: `GET`/`HEAD` → **401** com form que faz `POST /__cfx_totp__`, outros métodos →
+401 seco; o `next` do form é sanitizado para path+query da própria origem) → gate `?key=`
+existente → **injeção do `?token=`** → proxy. Upgrade **WebSocket**: TOTP primeiro (sem form —
+401 direto) e depois `?key=`; **nunca injeta** token (o token tem de vir no próprio URL do WS).
+
+**Injeção do token de boot** (`inject.json`): só em `GET`, com path **exatamente `/`**, sem
+`?token=` já presente e **sem cookie `dsh-auth-*`** (a app DSH já tem sessão); o token é
+acrescentado ao query original. Qualquer outro caso passa intacto — token em path ≠ `/` ou
+duplicado faz o DSH responder **401/loop**. A injeção é só neste caminho HTTP: o upgrade
+WebSocket nunca é tocado.
+
+**Parâmetros Google Authenticator** (RFC 6238, HMAC-**SHA1**): **6 dígitos**, período **30 s** e
+`bin % 10^digits` — ⚠️ **nunca** "os 6 primeiros dígitos do HOTP de 8 dígitos". Os seis vetores
+do RFC Apêndice B em 8 dígitos passam, e os valores **corretos** de 6 dígitos são
+`287082 · 081804 · 050471 · 005924 · 279037 · 353130` (truncar os 8 dígitos daria, p.ex.,
+`653531` — incompatível com o Google Authenticator; há teste dedicado a esta divergência).
+Desvio **±1** período (T-1/T/T+1). Sessão: cookie **`__cfx_totp`** (24 bytes aleatórios,
+`HttpOnly; Secure; SameSite=Strict; Max-Age=43200` = **12 h**), guardado por host; mudar o
+secret ou os parâmetros invalida **todas** as sessões.
+
+**Abuso**: rate limit de **5 falhas/300 s → 403** (`muitas tentativas, aguarde`; um login
+válido repõe o contador) e **replay global por secret** — o `last_counter` é único, logo dois
+hosts com o mesmo secret **não podem usar o mesmo código no mesmo período de 30 s**
+("código já usado — espera o próximo").
+
+**Hot-reload**: `auth.json`/`inject.json` têm watch próprio de **500 ms** (o `SIGHUP`, que o
+`domain.py` continua a mandar, recarrega os três) e editar qualquer deles **não** mexe no
+`routes_version` — nenhum `up`/`down` fica pendente por causa do overlay.
 
 ### Tempos medidos (2026-09-26, zona Free)
 
