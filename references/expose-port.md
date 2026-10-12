@@ -88,15 +88,22 @@ registado no `runner.log`); `digits` 6–8, `period` 1–3600 s, `skew` 0–3.
 **Pipeline por request** (ordem exata): `/__cfx-health` (match exato do `req.url`, 200 — isento;
 é o probe com que o `domain.py` prova a edge) → **gate TOTP** (host em `exempt` salta-o; sem
 cookie de sessão: `GET`/`HEAD` → **401** com form que faz `POST /__cfx_totp__`, outros métodos →
-401 seco; o `next` do form é sanitizado para path+query da própria origem) → gate `?key=`
+401 seco; o `next` do form guarda o alvo **RAW** (o browser faz o encode único — pré-encodar
+aqui faz o `next` chegar duplamente codificado e o login cair sempre em `/`) e o redirect é
+sanitizado para path+query da própria origem **sem** o `?token=` de boot e **sem** os paths
+internos `/__cfx_totp__`/`/__cfx-health`) → gate `?key=`
 existente → **injeção do `?token=`** → proxy. Upgrade **WebSocket**: TOTP primeiro (sem form —
 401 direto) e depois `?key=`; **nunca injeta** token (o token tem de vir no próprio URL do WS).
 
-**Injeção do token de boot** (`inject.json`): só em `GET`, com path **exatamente `/`**, sem
-`?token=` já presente e **sem cookie `dsh-auth-*`** (a app DSH já tem sessão); o token é
-acrescentado ao query original. Qualquer outro caso passa intacto — token em path ≠ `/` ou
-duplicado faz o DSH responder **401/loop**. A injeção é só neste caminho HTTP: o upgrade
-WebSocket nunca é tocado.
+**Injeção do token de boot** (`inject.json`): só em `GET`, com path **exatamente `/`** e
+**sem cookie `dsh-auth-*`** (a app DSH já tem sessão). O `inject.json` é a **fonte de
+verdade** do parâmetro `token` nesse caminho: sem token → acrescenta; token **velho ou
+diferente** (bookmark/link de um arranque anterior) → **re-escreve** pelo token atual;
+token duplicado → colapsa para exatamente um (o DSH exige `getAll('token').length === 1`,
+senão 401); o token **atual** passa intacto. O resto da query segue com os bytes originais.
+Qualquer outro caminho passa intacto. A injeção é só neste caminho HTTP: o upgrade
+WebSocket nunca é tocado. E o `?token=` **nunca sobrevive ao login TOTP**: o redirect
+pós-form tira-o do `next` (a barra de endereço fica limpa e cai direto na home).
 
 **Parâmetros Google Authenticator** (RFC 6238, HMAC-**SHA1**): **6 dígitos**, período **30 s** e
 `bin % 10^digits` — ⚠️ **nunca** "os 6 primeiros dígitos do HOTP de 8 dígitos". Os seis vetores
@@ -111,6 +118,14 @@ secret ou os parâmetros invalida **todas** as sessões.
 válido repõe o contador) e **replay global por secret** — o `last_counter` é único, logo dois
 hosts com o mesmo secret **não podem usar o mesmo código no mesmo período de 30 s**
 ("código já usado — espera o próximo").
+
+**Falhas fazem PRG (Post-Redirect-Get)**: código inválido/replay/limite **nunca** ficam como
+resposta do `POST /__cfx_totp__` — a barra de endereço do browser ficaria nesse path interno e
+o proxy devolveria o 404 do upstream (o "login cola" sem ir para home). Em vez disso: **303**
+de volta ao `next` real + cookie curto `__cfx_totp_err` (`invalid`/`replay`/`limited`,
+30 s, HttpOnly) que o challenge seguinte consome (e apaga) para renderizar o form **com** a
+mensagem de erro no URL limpo. O POST passa ao `totpPost` mesmo com rate-limit ativo — o PRG
+com `limited` continua a garantir que o browser não fica em `/__cfx_totp__`.
 
 **Hot-reload**: `auth.json`/`inject.json` têm watch próprio de **500 ms** (o `SIGHUP`, que o
 `domain.py` continua a mandar, recarrega os três) e editar qualquer deles **não** mexe no

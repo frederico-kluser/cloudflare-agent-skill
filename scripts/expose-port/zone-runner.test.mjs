@@ -20,7 +20,8 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 import {
-  totpAt, verifyTotp, shouldInject, rateLimitStep, isRateLimited, sanitizeNext,
+  totpAt, verifyTotp, shouldInject, withBootToken, dropQueryParam, dropQueryParamFromTarget,
+  rateLimitStep, isRateLimited, sanitizeNext,
   RATE_MAX_FAILS, RATE_WINDOW_S,
 } from './zone-runner.mjs'
 
@@ -121,6 +122,9 @@ test('sanitizeNext: só path+query do próprio host', () => {
   assert.equal(sanitizeNext('/ok\r\nSet-Cookie: x=1'), '/')
   assert.equal(sanitizeNext('relativo'), '/')
   assert.equal(sanitizeNext('https://teste.kluser.me/x'), '/') // host absoluto: nunca passa
+  assert.equal(sanitizeNext('/__cfx_totp__'), '/') // path interno do runner: nunca é redirect
+  assert.equal(sanitizeNext('/__cfx_totp__?seguinte=/x'), '/')
+  assert.equal(sanitizeNext('/__cfx-health'), '/')
 })
 
 // ------------------------------------------------------------- rate limit ---
@@ -147,7 +151,7 @@ test(`rate limit: a ${RATE_MAX_FAILS}.ª falha na janela de ${RATE_WINDOW_S}s bl
 })
 
 // ------------------------------------------------------------ shouldInject ---
-test('shouldInject: só GET "/" sem token e sem cookie dsh-auth-*', () => {
+test('shouldInject: GET "/" sem cookie dsh-auth-* — inject.json é a fonte de verdade do ?token=', () => {
   const entry = { token: 'tok-123' }
   const table = [
     // [pathname, search, cookie, entrada, esperado, nota]
@@ -160,8 +164,11 @@ test('shouldInject: só GET "/" sem token e sem cookie dsh-auth-*', () => {
     ['/', '', 'xdsh-auth-1=1', entry, true, 'prefixo tem de estar no início do nome'],
     ['/', '', 'dsh-auth=1', entry, true, 'sem o hífen final não é o cookie do DSH (COOKIE_PREFIX = "dsh-auth-")'],
     ['/', '', ' dsh-auth-abc = 1 ', entry, false, 'espaços à volta do nome'],
-    ['/', '?token=zzz', undefined, entry, false, 'já tem ?token='],
-    ['/', '?a=1&token=zzz', undefined, entry, false, 'token no meio da query'],
+    ['/', '?token=zzz', undefined, entry, true, 'token VELHO é reescrito (não vai para o 401 do DSH)'],
+    ['/', '?a=1&token=zzz', undefined, entry, true, 'token velho no meio da query é reescrito'],
+    ['/', '?token=tok-123', undefined, entry, false, 'o token ATUAL passa intacto'],
+    ['/', '?token=tok-123&token=tok-123', undefined, entry, true, 'duplicado colapsa para exatamente um'],
+    ['/', '?token=tok-123&token=zzz', undefined, entry, true, 'par contraditório é reescrito'],
     ['/', '?TOKEN=zzz', undefined, entry, true, 'nome do parâmetro é case-sensitive'],
     ['/', '?a=1', undefined, entry, true, 'outros parâmetros passam'],
     ['/', '?notext=1', undefined, entry, true, 'não confundir com token'],
@@ -174,6 +181,25 @@ test('shouldInject: só GET "/" sem token e sem cookie dsh-auth-*', () => {
   for (const [pathname, search, cookie, injectEntry, expected, note] of table) {
     assert.equal(shouldInject(pathname, search, cookie, injectEntry), expected, note)
   }
+})
+
+test('withBootToken: exatamente um ?token=, resto da query intacto', () => {
+  assert.equal(withBootToken('/', 'tok-123'), '/?token=tok-123')
+  assert.equal(withBootToken('/?a=1', 'tok-123'), '/?a=1&token=tok-123')
+  assert.equal(withBootToken('/?token=velho', 'tok-123'), '/?token=tok-123')
+  assert.equal(withBootToken('/?a=1&token=velho&b=2', 'tok-123'), '/?a=1&b=2&token=tok-123')
+  assert.equal(withBootToken('/?token=a&token=b', 'tok-123'), '/?token=tok-123')
+  assert.equal(withBootToken('/#frag', 'tok-123'), '/?token=tok-123#frag')
+  assert.equal(withBootToken('/?a=b%20c', 'tok-123'), '/?a=b%20c&token=tok-123') // bytes crus preservados
+})
+
+test('dropQueryParam / dropQueryParamFromTarget: o boot token nunca sobrevive ao login', () => {
+  assert.equal(dropQueryParam('?token=velho', 'token'), '')
+  assert.equal(dropQueryParam('?a=1&token=velho&b=2', 'token'), '?a=1&b=2')
+  assert.equal(dropQueryParam('?a=1', 'token'), '?a=1')
+  assert.equal(dropQueryParamFromTarget('/?token=velho', 'token'), '/')
+  assert.equal(dropQueryParamFromTarget('/trello?a=1&token=velho', 'token'), '/trello?a=1')
+  assert.equal(dropQueryParamFromTarget('/trello?a=1', 'token'), '/trello?a=1')
 })
 
 // -------------------------------------------------------------------- E2E ---
@@ -320,6 +346,8 @@ test('E2E: form 401 → TOTP → cookie → injeção do ?token= → isento → 
     for (const needle of ['action="/__cfx_totp__"', 'name="code"', 'inputmode="numeric"', 'name="next"', 'verificação TOTP', '<form']) {
       assert.ok(challenge.body.includes(needle), `form 401 sem ${needle}`)
     }
+    assert.ok(challenge.body.includes('name="next" value="/"'),
+      'o hidden next guarda o alvo RAW — o browser faz o encode único (o pré-encode duplicava e caía sempre em "/")')
     assert.equal(seen.length, 0, 'o upstream não pode ser tocado antes do TOTP')
 
     // ...e o health continua livre e antes de tudo
@@ -327,13 +355,14 @@ test('E2E: form 401 → TOTP → cookie → injeção do ?token= → isento → 
     assert.equal(health.status, 200)
     assert.equal(health.body, 'ok')
 
-    // (b) POST com código correto ⇒ 303 + Set-Cookie de sessão TOTP
+    // (b) POST com código correto ⇒ 303 + Set-Cookie de sessão TOTP; o deep link
+    // sobrevive ao login e o ?token= velho NUNCA (o boot token não passa o round-trip)
     const code = totpAt(secret, Math.floor(Date.now() / 1000 / 30))
     const login = await call({
       method: 'POST',
       target: '/__cfx_totp__',
       headers: FORM,
-      body: `code=${encodeURIComponent(code)}&next=${encodeURIComponent('/trello?a=1')}`,
+      body: `code=${encodeURIComponent(code)}&next=${encodeURIComponent('/trello?a=1&token=velho')}`,
     })
     assert.equal(login.status, 303)
     assert.equal(login.headers.location, '/trello?a=1')
@@ -351,15 +380,18 @@ test('E2E: form 401 → TOTP → cookie → injeção do ?token= → isento → 
     assert.equal(fs.statSync(statePath).mode & 0o777, 0o600)
     assert.ok(!fs.existsSync(`${statePath}.tmp`), 'tmp do rename atómico não pode ficar para trás')
 
-    // (c) replay do mesmo código ⇒ 401 outra vez (e sem cookie novo)
+    // (c) replay do mesmo código ⇒ PRG com razão "replay" (e sem sessão nova)
     const replay = await call({
       method: 'POST',
       target: '/__cfx_totp__',
       headers: FORM,
       body: `code=${encodeURIComponent(code)}&next=${encodeURIComponent('/')}`,
     })
-    assert.equal(replay.status, 401)
-    assert.equal(replay.headers['set-cookie'], undefined)
+    assert.equal(replay.status, 303)
+    assert.equal(replay.headers.location, '/')
+    const replayCookie = String(replay.headers['set-cookie']?.[0] ?? '')
+    assert.match(replayCookie, /^__cfx_totp_err=replay;/, 'só o cookie de erro — nunca uma sessão nova')
+    assert.ok(!replayCookie.startsWith('__cfx_totp='), 'sem sessão TOTP nova no replay')
 
     // (d) com cookie ⇒ chega ao upstream COM o ?token= injetado
     seen.length = 0
@@ -369,7 +401,8 @@ test('E2E: form 401 → TOTP → cookie → injeção do ?token= → isento → 
     assert.equal(seen.at(-1).url, injected, 'o upstream tem de receber o token injetado')
     assert.equal(seen.at(-1).host, `127.0.0.1:${upPort}`, 'Host reescrito para o upstream')
 
-    // (d2) variantes: query pré-existente acrescenta; cookie dsh-auth-* e ?token= passam verbatim
+    // (d2) variantes: query pré-existente acrescenta; cookie dsh-auth-* passa verbatim;
+    // ?token= velho é REESCRITO pelo token do inject.json; o token atual passa intacto
     await call({ target: '/?a=1', headers: { cookie: `__cfx_totp=${sid}` } })
     assert.equal(seen.at(-1).url, `/?a=1&token=${encodeURIComponent(bootToken)}`)
     await call({ target: '/', headers: { cookie: `__cfx_totp=${sid}; dsh-auth-abc=1` } })
@@ -377,7 +410,9 @@ test('E2E: form 401 → TOTP → cookie → injeção do ?token= → isento → 
     await call({ target: '/api', headers: { cookie: `__cfx_totp=${sid}` } })
     assert.equal(seen.at(-1).url, '/api', 'path ≠ / não injeta')
     await call({ target: '/?token=ja-tem', headers: { cookie: `__cfx_totp=${sid}` } })
-    assert.equal(seen.at(-1).url, '/?token=ja-tem', 'token já presente passa verbatim')
+    assert.equal(seen.at(-1).url, injected, 'token VELHO é reescrito pelo token do inject.json')
+    await call({ target: `/?token=${bootToken}`, headers: { cookie: `__cfx_totp=${sid}` } })
+    assert.equal(seen.at(-1).url, injected, 'o token ATUAL passa intacto')
 
     // (e) host isento ⇒ sem TOTP e sem injeção (não tem entrada no inject.json)
     seen.length = 0
@@ -414,17 +449,29 @@ test('E2E: form 401 → TOTP → cookie → injeção do ?token= → isento → 
       headers: FORM,
       body: `code=${encodeURIComponent(code)}&next=%2F`,
     })
-    assert.equal(replayOtherHost.status, 401, 'counter já aceite não volta a valer')
+    assert.equal(replayOtherHost.status, 303, 'counter já aceite não volta a valer — e a falha faz PRG')
+    assert.equal(replayOtherHost.headers.location, '/')
+    assert.match(String(replayOtherHost.headers['set-cookie']?.[0] ?? ''), /^__cfx_totp_err=replay;/)
 
-    // (g) rate limit: a 5.ª falha na janela ⇒ 403 "muitas tentativas" (o replay acima = 1 falha)
+    // (f4) PRG da falha: o GET seguinte mostra o form COM o erro e sem ficar em /__cfx_totp__
+    const afterFail = await request(port, {
+      host: GATE_HOST, target: '/', headers: { cookie: '__cfx_totp_err=replay' },
+    })
+    assert.equal(afterFail.status, 401)
+    assert.ok(afterFail.body.includes('código já usado'), 'o erro viaja no cookie e aparece no form')
+    assert.ok(afterFail.body.includes('name="next" value="/"'), 'o next do re-render NUNCA é /__cfx_totp__')
+    assert.match(String(afterFail.headers['set-cookie']?.[0] ?? ''), /^__cfx_totp_err=; .*Max-Age=0/)
+
+    // (g) rate limit: a 5.ª falha na janela ⇒ PRG com razão "limited" e o GET seguinte
+    // responde 403 "muitas tentativas" (o replay acima = 1 falha)
     const bad = { method: 'POST', target: '/__cfx_totp__', headers: FORM, body: 'code=12345&next=%2F' }
     let last
     for (let attempt = 2; attempt <= RATE_MAX_FAILS; attempt += 1) last = await call(bad)
-    assert.equal(last.status, 403)
-    assert.match(last.body, /muitas tentativas, aguarde/)
-    assert.ok(!last.body.includes('<form'), '403 não leva form')
+    assert.equal(last.status, 303, 'a falha nunca fica no POST (a URL seria /__cfx_totp__)')
+    assert.match(String(last.headers['set-cookie']?.[0] ?? ''), /^__cfx_totp_err=limited;/)
     const stillLimited = await call({ target: '/' })
     assert.equal(stillLimited.status, 403)
+    assert.match(stillLimited.body, /muitas tentativas, aguarde/)
     assert.ok(!stillLimited.body.includes('<form'))
 
     // (h) watch do auth.json: enabled:false ⇒ TOTP sai de cena sozinho (sem SIGHUP)

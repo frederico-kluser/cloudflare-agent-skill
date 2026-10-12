@@ -659,10 +659,10 @@ def ensure_unit_template(node):
         "# Gerado por cloudflare-agent-skill/scripts/expose-port/domain.py — reescrito a cada up.\n"
         "[Unit]\n"
         "Description=cloudflare-agent-skill: shares da zona %i (named tunnel + router)\n"
-        "After=network-online.target\nWants=network-online.target\n\n"
+        "After=network-online.target\nWants=network-online.target\nStartLimitIntervalSec=0\n\n"
         "[Service]\nType=simple\n"
         f"ExecStart={node} {RUNNER} {ZONES}/%i\n"
-        "Restart=always\nRestartSec=3\nStartLimitIntervalSec=0\n"
+        "Restart=always\nRestartSec=3\n"
         f"StandardOutput=append:{ZONES}/%i/runner.log\nStandardError=inherit\n"
         "KillMode=control-group\nTimeoutStopSec=8\n\n"
         "[Install]\nWantedBy=default.target\n")

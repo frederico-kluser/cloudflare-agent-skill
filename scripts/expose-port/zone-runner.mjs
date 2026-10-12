@@ -19,8 +19,10 @@
  *      - Optional ?key= password gate (gate=true, same model as proxy.mjs).
  *      - Optional TOTP layer (auth.json, Google Authenticator): every route of the zone is
  *        behind it except the hosts listed in `exempt`. Read-only for the runner, hot-reloaded.
- *      - Optional boot-token injection (inject.json): GET "/" without ?token= and without a
- *        dsh-auth-* cookie gets `?token=<boot token>` appended before the proxy. HTTP only.
+ *      - Optional boot-token injection (inject.json): on GET "/" without a dsh-auth-* cookie,
+ *        `?token=<boot token>` is written before the proxy — absent, duplicated or STALE
+ *        (?token= from an old bookmark/link) values are replaced; inject.json is the source
+ *        of truth for that parameter. HTTP only.
  *      Unknown host → 404. /__cfx-health → 200 (domain.py probes the edge with it).
  *   2. `cloudflared tunnel run` with a catch-all ingress to the router — never restarted when
  *      routes change. Restarted with backoff if it dies.
@@ -55,6 +57,12 @@ const HEALTH_PATH = '/__cfx-health'
 const TOTP_PATH = '/__cfx_totp__'
 const TOTP_COOKIE = '__cfx_totp'
 const TOTP_COOKIE_MAX_AGE = 43200 // 12 h
+const TOTP_ERR_COOKIE = '__cfx_totp_err' // carrega a razão da falha através do PRG
+const TOTP_ERR = {
+  invalid: 'código inválido, tenta de novo.',
+  replay: 'código já usado — espera o próximo.',
+  limited: 'muitas tentativas, aguarde.',
+}
 const TOTP_DIGITS = 6
 const TOTP_PERIOD = 30
 const TOTP_SKEW = 1
@@ -173,39 +181,81 @@ export function hasCookiePrefix(cookieHeader, prefix) {
   return false
 }
 
-/** True when the raw query string already carries `name` (handles "a=b" and "?a=b"). */
-export function hasQueryParam(search, name) {
+/** Values of every query pair named `name` (handles "a=b" and "?a=b"; raw encoding preserved). */
+export function queryParams(search, name) {
   const q = String(search ?? '').replace(/^\?/, '')
-  if (!q) return false
+  const out = []
+  if (!q) return out
   for (const pair of q.split('&')) {
     if (!pair) continue
     const eq = pair.indexOf('=')
     const raw = eq === -1 ? pair : pair.slice(0, eq)
     let key = raw
     try { key = decodeURIComponent(raw.replace(/\+/g, ' ')) } catch { /* keep raw */ }
-    if (key === name) return true
+    if (key === name) out.push(eq === -1 ? '' : pair.slice(eq + 1))
   }
-  return false
+  return out
+}
+
+/** True when the raw query string already carries `name` (handles "a=b" and "?a=b"). */
+export function hasQueryParam(search, name) {
+  return queryParams(search, name).length > 0
+}
+
+/** Key of a raw "k=v" query pair, percent-decoded (falls back to raw bytes). */
+function pairKey(pair) {
+  const eq = pair.indexOf('=')
+  const raw = eq === -1 ? pair : pair.slice(0, eq)
+  try { return decodeURIComponent(raw.replace(/\+/g, ' ')) } catch { return raw }
+}
+
+/** Drop every pair named `name` from a raw query string; the rest keeps its raw bytes. */
+export function dropQueryParam(search, name) {
+  const q = String(search ?? '')
+  if (!q) return ''
+  const kept = q.replace(/^\?/, '').split('&').filter((pair) => pair && pairKey(pair) !== name)
+  return kept.length ? `?${kept.join('&')}` : ''
+}
+
+/** Drop every pair named `name` from the query of a path+query target ("/t?a=1&token=x" → "/t?a=1"). */
+export function dropQueryParamFromTarget(target, name) {
+  const t = String(target ?? '')
+  const q = t.indexOf('?')
+  if (q === -1) return t
+  return t.slice(0, q) + dropQueryParam(t.slice(q), name)
 }
 
 /**
- * Boot-token injection rule (HTTP GET only): exactly "/", no ?token= already, and no
- * DSH session cookie (dsh-auth-*) — otherwise the app answers 401 / loops.
+ * Boot-token injection rule (HTTP GET only): exactly "/", no DSH session cookie
+ * (dsh-auth-*) and the `token` query absent or different from the boot token this
+ * route owns. inject.json is the source of truth: a stale `?token=` from an old
+ * bookmark/link is rewritten to the current boot token instead of being forwarded
+ * into the app's 401 ("reopen the URL printed by dsh web").
  */
 export function shouldInject(pathname, search, cookieHeader, injectEntry) {
   const token = injectEntry && typeof injectEntry.token === 'string' ? injectEntry.token : ''
   if (!token) return false
   if (pathname !== '/') return false
-  if (hasQueryParam(search, INJECT_PARAM)) return false
   if (hasCookiePrefix(cookieHeader, DSH_COOKIE_PREFIX)) return false
-  return true
+  const present = queryParams(search, INJECT_PARAM)
+  if (present.length !== 1) return true // sem token ou duplicado: reescreve para exatamente um
+  let decoded = present[0]
+  try { decoded = decodeURIComponent(present[0].replace(/\+/g, ' ')) } catch { /* keep raw */ }
+  return decoded !== token // token velho/diferente → reescreve; o atual passa intacto
 }
 
-/** Append ?token=… verbatim to the incoming request target (keeps the original query as-is). */
+/** Append/replace ?token=… on the request target (exactly one token pair; other query kept verbatim). */
 export function withBootToken(target, token) {
   const url = String(target ?? '/')
-  const sep = url.includes('?') ? '&' : '?'
-  return `${url}${sep}${INJECT_PARAM}=${encodeURIComponent(token)}`
+  const at = url.indexOf('#')
+  const hash = at === -1 ? '' : url.slice(at)
+  const head = at === -1 ? url : url.slice(0, at)
+  const q = head.indexOf('?')
+  const pathPart = q === -1 ? head : head.slice(0, q)
+  const search = q === -1 ? '' : head.slice(q + 1)
+  const kept = search.split('&').filter((pair) => pair && pairKey(pair) !== INJECT_PARAM)
+  kept.push(`${INJECT_PARAM}=${encodeURIComponent(token)}`)
+  return `${pathPart}?${kept.join('&')}${hash}`
 }
 
 /** Post-login redirect target: only path+query of our own origin (no open redirect, no CRLF). */
@@ -215,6 +265,9 @@ export function sanitizeNext(value, fallback = '/') {
   if (/[\u0000-\u001f\u007f]/.test(raw)) return fallback
   try {
     const u = new URL(raw, 'http://x')
+    // alvos internos do runner nunca são redirect (senão o login "cola" o browser
+    // em /__cfx_totp__ e o proxy devolve 404 do upstream)
+    if (u.pathname === TOTP_PATH || u.pathname === HEALTH_PATH) return fallback
     return u.pathname + u.search
   } catch { return fallback }
 }
@@ -444,13 +497,39 @@ export function main(argv = process.argv) {
   }
 
   function totpChallenge(req, res, error) {
-    const next = encodeURIComponent(req.url ?? '/') // hidden "next": the whole target, urlencoded
-    res.writeHead(401, {
+    // hidden "next": the RAW target. The browser form-encodes it exactly once —
+    // pre-encoding here made it arrive double-encoded, sanitizeNext rejected it
+    // and every login fell back to "/" (deep links and ?token= were lost).
+    // sanitizeNext also refuses the runner's own paths: a challenge re-rendered
+    // over a POST used to store "/__cfx_totp__" as next, and every later login
+    // redirected the browser THERE (stuck at an upstream 404, never home).
+    const next = sanitizeNext(req.url)
+    let msg = error
+    const err = cookieValue(req.headers.cookie, TOTP_ERR_COOKIE)
+    const headers = {
       'content-type': 'text/html; charset=utf-8',
       'cache-control': 'no-store',
       'referrer-policy': 'no-referrer',
+    }
+    if (err) {
+      headers['set-cookie'] = `${TOTP_ERR_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict; Secure`
+      if (!msg) msg = TOTP_ERR[err] ?? undefined
+    }
+    res.writeHead(401, headers)
+    res.end(totpForm(next, msg))
+  }
+
+  /** Post-Redirect-Get: a falha do form nunca fica como resposta do POST — a URL do
+   *  browser seria /__cfx_totp__. O redirect volta ao alvo real e a razão viaja num
+   *  cookie curto, consumido (e apagado) pelo challenge seguinte. */
+  function totpRedirectFail(res, next, reason) {
+    res.writeHead(303, {
+      location: next,
+      'set-cookie': `${TOTP_ERR_COOKIE}=${reason}; Path=/; Max-Age=30; HttpOnly; SameSite=Strict; Secure`,
+      'cache-control': 'no-store',
+      'referrer-policy': 'no-referrer',
     })
-    res.end(totpForm(next, error))
+    res.end()
   }
 
   const tooMany = (_req, res) => {
@@ -477,7 +556,6 @@ export function main(argv = process.argv) {
 
   function totpPost(route, req, res) {
     const now = nowSec()
-    if (isRateLimited(state, now)) return tooMany(req, res)
     readBody(req, TOTP_BODY_LIMIT, (err, body) => {
       if (err) {
         res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' })
@@ -485,7 +563,10 @@ export function main(argv = process.argv) {
         return
       }
       const form = new URLSearchParams(body)
-      const next = sanitizeNext(form.get('next'))
+      // The boot token never survives the login round-trip: a stale ?token= in the
+      // target would land in the address bar and hit the app's 401 instead of home.
+      const next = dropQueryParamFromTarget(sanitizeNext(form.get('next')), INJECT_PARAM)
+      if (isRateLimited(state, now)) return totpRedirectFail(res, next, 'limited')
       const result = verifyTotp(auth.secret, form.get('code'), {
         now: Date.now(), skew: auth.skew, period: auth.period, digits: auth.digits,
         lastCounter: state.last_counter,
@@ -496,10 +577,8 @@ export function main(argv = process.argv) {
         state.fails_window_start = after.fails_window_start
         saveState()
         log(`${route.host}: TOTP rejected (${result.reason})`)
-        if (after.limited) return tooMany(req, res)
-        return totpChallenge(req, res, result.reason === 'replay'
-          ? 'código já usado — espera o próximo.'
-          : 'código inválido, tenta de novo.')
+        return totpRedirectFail(res, next,
+          after.limited ? 'limited' : result.reason === 'replay' ? 'replay' : 'invalid')
       }
       state.last_counter = result.counter
       state.fails = 0
@@ -608,8 +687,10 @@ export function main(argv = process.argv) {
     if (!route) return notFound(req, res)
     // 1) TOTP before anything else (health excluded above; exempt hosts skip it entirely)
     if (totpRequired(route) && !totpCookieOk(route.host, req)) {
-      if (isRateLimited(state, nowSec())) return tooMany(req, res)
+      // O POST do form passa SEMPRE ao totpPost — mesmo limitado, ele faz PRG com a
+      // razão "limited" para o alvo real; cortar aqui deixaria o browser em /__cfx_totp__.
       if (req.method === 'POST' && pathOnly(req.url) === TOTP_PATH) return totpPost(route, req, res)
+      if (isRateLimited(state, nowSec())) return tooMany(req, res)
       if (req.method === 'GET' || req.method === 'HEAD') return totpChallenge(req, res)
       res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' })
       res.end('401 Unauthorized — autenticação TOTP necessária\n')
