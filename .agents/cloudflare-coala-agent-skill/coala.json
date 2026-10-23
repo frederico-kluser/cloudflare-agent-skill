@@ -1,22 +1,22 @@
 {
   "coala_manifest": 1,
-  "project": "cloudflare-agent-skill",
+  "project": "cloudflare",
   "skill": "cloudflare-coala-agent-skill",
   "db": "memory/coala.sqlite",
   "engine": {
     "file": "scripts/coala.py",
     "version": "3.0.0",
-    "sha256": "41c550b6f0a462170fe4f37cc2b03094f2e06a967efac049f805f3e705b7db53"
+    "sha256": "2fd31064a98da803a94dfdb903f448daa551feeecc5b7dc7b371337ce88eee67"
   },
   "schema_version": 4,
   "git_policy": "ignore",
   "installer": "coala-agent-skill/scripts/coala-install.py",
   "installed_at": "2026-09-27T09:12:18+00:00",
-  "updated_at": "2026-10-12T19:42:26+00:00",
+  "updated_at": "2026-10-15T23:12:53+00:00",
   "managed": {
-    "SKILL.md": "221c26e4805733969872218d69e2ea4db95140e9910f7b905fa3fdb9341ce989",
+    "SKILL.md": "64f8918de279b63356c51ca241f89fbbc6bf3c9cc20a9ac44210c5ef0a4f37fa",
     "memory/.gitignore": "5941079484623004d0493eda784610b14f22d89d4a7473df50f514a8a3b044d4",
-    "references/schema.md": "350f2e0b075c382ecadb608819ad31ebd76cacef3ecaf95db3775b23c09699ea",
-    "scripts/coala.py": "41c550b6f0a462170fe4f37cc2b03094f2e06a967efac049f805f3e705b7db53"
+    "references/schema.md": "d7bdd6cb63f82d0daf645c311e9b72a958b008ec09ab516759d1466905f46027",
+    "scripts/coala.py": "2fd31064a98da803a94dfdb903f448daa551feeecc5b7dc7b371337ce88eee67"
   }
 }
